@@ -2,24 +2,29 @@
 
 #include "engine/iscript.h"
 #include "engine/engine.h"
-#include "engine/asset_manager/object.h"
 #include "engine/object_ref.h"
+#include "engine/scene.h"
 
 class Test : public IScript {
 public:
-    ObjectRef target;
+    EntityRef target;
 
     Test() {
         INSPECT(target);
     }
 
-    void init() override { }
+    void init() override {}
     const char* typeName() const override { return "Test"; }
+
     void update() override {
         Scene& scene = ENGINE().scene;
-        Object* obj = target.get(scene);
-        if (!obj)
-            obj = &scene.get(object);
-        obj->transform.rotate({0, 45.f * DT(), 0});
+        Entity e = target.id;
+        if (!scene.isValid(e))
+            e = entity;
+        if (!scene.isValid(e) || !scene.has<Transform>(e))
+            return;
+
+        Transform& t = scene.get<Transform>(e);
+        t.rotation.y += 45.f * DT();
     }
 };

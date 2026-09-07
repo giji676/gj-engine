@@ -3,7 +3,7 @@
 #include <glm/glm.hpp>
 
 #include "engine/camera.h"
-#include "engine/defines.h"
+#include "engine/entity.h"
 #include "engine/input.h"
 
 // Free-fly orbit camera for the editor viewport. Independent of the in-game camera.
@@ -19,13 +19,13 @@ public:
     void frameOn(
         const glm::vec3& worldCenter,
         float worldExtent,
-        ObjectID selectionId = INVALID_OBJECT);
+        Entity selectionId = Entity::invalid());
 
     void update(
         Input& input,
         const glm::vec4& viewportRect,
         bool active,
-        ObjectID selectionId,
+        Entity selectionId,
         const glm::vec3& selectionPivot);
 
 private:
@@ -43,5 +43,5 @@ private:
 
     bool orbiting_ = false;
     bool panning_ = false;
-    ObjectID trackedSelectionId_ = INVALID_OBJECT;
+    Entity trackedSelectionId_ = Entity::invalid();
 };

@@ -11,9 +11,12 @@
 #include "editor/toolbar_panel.h"
 #include "engine/camera.h"
 #include "engine/defines.h"
+#include "engine/entity.h"
 #include "engine/raycasting.h"
 
 class Engine;
+struct Object;
+struct Transform;
 
 enum class EditorPlayState {
     Edit,
@@ -109,7 +112,7 @@ private:
     glm::vec4 dragStartRect_ = {0.f, 0.f, 0.f, 0.f};
 
     bool objectDragging_ = false;
-    ObjectID dragObjectId_ = INVALID_OBJECT;
+    Entity dragObjectId_ = Entity::invalid();
     GizmoHandle gizmoActiveHandle_ = GizmoHandle::None;
     GizmoHandle gizmoHoveredHandle_ = GizmoHandle::None;
     glm::vec3 dragPlanePoint_{0.f};
@@ -160,7 +163,7 @@ private:
 
     bool makeViewportRay(glm::vec2 mouse, Ray& outRay) const;
     void frameSelection();
-    float frameExtentForObject(const Object& obj) const;
+    float frameExtentForEntity(const Object& obj, const Transform& transform) const;
     float gizmoWorldSize(const glm::vec3& origin) const;
     GizmoHandle pickGizmoHandle(
         GizmoMode mode,
@@ -171,7 +174,7 @@ private:
     bool beginGizmoDrag(
         GizmoHandle handle,
         const Ray& ray,
-        ObjectID id,
+        Entity id,
         const glm::vec3& origin,
         float gizmoSize,
         const GizmoAxes& axes);

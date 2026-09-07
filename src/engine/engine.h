@@ -3,8 +3,8 @@
 #include <SDL2/SDL_events.h>
 
 #include "camera.h"
-#include "raycasting.h"
 #include "scene.h"
+#include "raycasting.h"
 #include "ui.h"
 #include "input.h"
 #include "window.h"
@@ -17,6 +17,7 @@
 
 #define ENGINE() \
     Engine::instance()
+
 #define DT() \
     Engine::instance().app.deltaTime
 
@@ -41,7 +42,7 @@ public:
     MeshRegistry meshRegistry;
     Editor editor;
 
-    ObjectID activeCameraObject = INVALID_OBJECT;
+    Entity activeCameraEntity = Entity::invalid();
 
     float G = 9.81;
     float fps = 0.0f;

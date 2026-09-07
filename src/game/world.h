@@ -8,7 +8,7 @@ struct Terrain {
     std::vector<unsigned int> indices;
 };
 
-struct World {
+struct World_ {
     Terrain terrain;
     int width = 0;
     int height = 0;

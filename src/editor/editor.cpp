@@ -7,15 +7,14 @@
 #include <glm/gtc/quaternion.hpp>
 #include <glm/gtx/euler_angles.hpp>
 
-#include "engine/asset_manager/object.h"
 #include "engine/asset_manager/widgets.h"
 #include "engine/camera.h"
 #include "engine/engine.h"
 #include "engine/input.h"
 #include "engine/renderer/debug_renderer.h"
-#include "engine/scene.h"
 #include "engine/ui.h"
 #include "engine/utils/geometry.h"
+#include "engine/scene.h"
 
 namespace {
 
@@ -61,8 +60,8 @@ glm::vec3 gizmoWorldAxis(const GizmoAxes& axes, GizmoHandle handle) {
     }
 }
 
-GizmoAxes gizmoAxesFromObject(const Object& obj) {
-    const glm::mat4& world = obj.worldMatrix;
+GizmoAxes gizmoAxesFromTransform(const Transform& transform) {
+    const glm::mat4& world = transform.worldMatrix;
     GizmoAxes axes;
     const glm::vec3 rawX = glm::vec3(world[0]);
     const glm::vec3 rawY = glm::vec3(world[1]);
@@ -76,14 +75,24 @@ GizmoAxes gizmoAxesFromObject(const Object& obj) {
     return axes;
 }
 
-GizmoAxes gizmoAxesForSpace(const Object& obj, GizmoSpace space) {
+GizmoAxes gizmoAxesForSpace(const Transform& transform, GizmoSpace space) {
     if (space == GizmoSpace::Local)
-        return gizmoAxesFromObject(obj);
+        return gizmoAxesFromTransform(transform);
     GizmoAxes axes;
     axes.x = {1.f, 0.f, 0.f};
     axes.y = {0.f, 1.f, 0.f};
     axes.z = {0.f, 0.f, 1.f};
     return axes;
+}
+
+const Transform* parentTransform(Scene& scene, Entity entity) {
+    static const Transform kIdentity;
+    if (!scene.has<Hierarchy>(entity))
+        return &kIdentity;
+    const Entity parent = scene.get<Hierarchy>(entity).parent;
+    if (!scene.isValid(parent) || !scene.has<Transform>(parent))
+        return &kIdentity;
+    return &scene.get<Transform>(parent);
 }
 
 glm::quat rotationQuatFromWorldMatrix(const glm::mat4& worldMatrix) {
@@ -292,13 +301,15 @@ void Editor::update() {
         inspectorView_.update(engine_.scene);
 
         if (isEditing()) {
-            const ObjectID selectedId = hierarchyView_.selectedId();
-            if (selectedId != INVALID_OBJECT &&
-                selectedId != engine_.scene.getRoot()) {
-                const Object& obj = engine_.scene.get(selectedId);
-                const glm::vec3 origin = glm::vec3(obj.worldMatrix[3]);
+            const Entity selectedId = hierarchyView_.selectedId();
+            if (selectedId != Entity::invalid() &&
+                selectedId != engine_.scene.root &&
+                engine_.scene.has<Transform>(selectedId)) {
+                const Transform& transform =
+                    engine_.scene.get<Transform>(selectedId);
+                const glm::vec3 origin = glm::vec3(transform.worldMatrix[3]);
                 const float size = gizmoWorldSize(origin);
-                const GizmoAxes axes = gizmoAxesForSpace(obj, gizmoSpace_);
+                const GizmoAxes axes = gizmoAxesForSpace(transform, gizmoSpace_);
                 drawGizmo(gizmoMode_, origin, size, axes);
             }
         }
@@ -324,13 +335,14 @@ void Editor::updateEditorCamera() {
         return;
 
     glm::vec3 selectionPivot{0.f};
-    ObjectID selectionId = INVALID_OBJECT;
-    const ObjectID selectedId = hierarchyView_.selectedId();
-    if (selectedId != INVALID_OBJECT &&
-        selectedId != engine_.scene.getRoot()) {
+    Entity selectionId = Entity::invalid();
+    const Entity selectedId = hierarchyView_.selectedId();
+    if (selectedId != Entity::invalid() &&
+        selectedId != engine_.scene.root &&
+        engine_.scene.has<Transform>(selectedId)) {
         selectionId = selectedId;
         selectionPivot = glm::vec3(
-            engine_.scene.get(selectedId).worldMatrix[3]);
+            engine_.scene.get<Transform>(selectedId).worldMatrix[3]);
     }
 
     editorCamera_.update(
@@ -926,20 +938,26 @@ bool Editor::makeViewportRay(glm::vec2 mouse, Ray& outRay) const {
 
 void Editor::clearGizmoDrag() {
     objectDragging_ = false;
-    dragObjectId_ = INVALID_OBJECT;
+    dragObjectId_ = Entity::invalid();
     gizmoActiveHandle_ = GizmoHandle::None;
     dragAxis_ = {0.f, 0.f, 0.f};
     dragLocalAxis_ = {0.f, 0.f, 0.f};
 }
 
-float Editor::frameExtentForObject(const Object& obj) const {
-    const Bounds bounds = obj.getBounds();
-    if (!obj.model || glm::length(bounds.size) < 1e-6f)
+float Editor::frameExtentForEntity(
+    const Object& obj,
+    const Transform& transform) const
+{
+    if (!obj.model)
         return EditorCamera::kDefaultDistance * 0.5f;
 
-    const glm::vec3 col0 = glm::vec3(obj.worldMatrix[0]);
-    const glm::vec3 col1 = glm::vec3(obj.worldMatrix[1]);
-    const glm::vec3 col2 = glm::vec3(obj.worldMatrix[2]);
+    const Bounds bounds = obj.model->getBounds();
+    if (glm::length(bounds.size) < 1e-6f)
+        return EditorCamera::kDefaultDistance * 0.5f;
+
+    const glm::vec3 col0 = glm::vec3(transform.worldMatrix[0]);
+    const glm::vec3 col1 = glm::vec3(transform.worldMatrix[1]);
+    const glm::vec3 col2 = glm::vec3(transform.worldMatrix[2]);
     const glm::vec3 worldSize = {
         glm::length(col0) * bounds.size.x,
         glm::length(col1) * bounds.size.y,
@@ -949,18 +967,28 @@ float Editor::frameExtentForObject(const Object& obj) const {
 }
 
 void Editor::frameSelection() {
-    const ObjectID selectedId = hierarchyView_.selectedId();
-    if (selectedId == INVALID_OBJECT || selectedId == engine_.scene.getRoot())
+    const Entity selectedId = hierarchyView_.selectedId();
+    if (selectedId == Entity::invalid() || selectedId == engine_.scene.root)
+        return;
+    if (!engine_.scene.has<Transform>(selectedId))
         return;
 
-    const Object& obj = engine_.scene.get(selectedId);
-    glm::vec3 center = glm::vec3(obj.worldMatrix[3]);
+    const Transform& transform = engine_.scene.get<Transform>(selectedId);
+    glm::vec3 center = glm::vec3(transform.worldMatrix[3]);
+    float extent = EditorCamera::kDefaultDistance * 0.5f;
 
-    const Bounds bounds = obj.getBounds();
-    if (obj.model && glm::length(bounds.size) > 1e-6f)
-        center = glm::vec3(obj.worldMatrix * glm::vec4(bounds.center, 1.f));
+    if (engine_.scene.has<Object>(selectedId)) {
+        const Object& obj = engine_.scene.get<Object>(selectedId);
+        if (obj.model) {
+            const Bounds bounds = obj.model->getBounds();
+            if (glm::length(bounds.size) > 1e-6f)
+                center = glm::vec3(
+                    transform.worldMatrix * glm::vec4(bounds.center, 1.f));
+        }
+        extent = frameExtentForEntity(obj, transform);
+    }
 
-    editorCamera_.frameOn(center, frameExtentForObject(obj), selectedId);
+    editorCamera_.frameOn(center, extent, selectedId);
 }
 
 float Editor::gizmoWorldSize(const glm::vec3& origin) const {
@@ -1104,7 +1132,7 @@ GizmoHandle Editor::pickGizmoHandle(
 bool Editor::beginGizmoDrag(
     GizmoHandle handle,
     const Ray& ray,
-    ObjectID id,
+    Entity id,
     const glm::vec3& origin,
     float gizmoSize,
     const GizmoAxes& axes)
@@ -1115,14 +1143,17 @@ bool Editor::beginGizmoDrag(
     if (!camera)
         return false;
 
-    Object& obj = engine_.scene.get(id);
+    if (!engine_.scene.has<Transform>(id))
+        return false;
+
+    Transform& transform = engine_.scene.get<Transform>(id);
     dragObjectId_ = id;
     gizmoActiveHandle_ = handle;
     dragPlanePoint_ = origin;
     dragAxis_ = {0.f, 0.f, 0.f};
     dragLocalAxis_ = {0.f, 0.f, 0.f};
     dragGizmoSize_ = gizmoSize;
-    dragStartScale_ = obj.transform.scale();
+    dragStartScale_ = transform.scale;
 
     if (isCenterHandle(handle)) {
         dragPlaneNormal_ = glm::normalize(camera->front);
@@ -1267,16 +1298,17 @@ void Editor::updateSceneInteraction() {
     const glm::vec4 vp = gameViewportRect();
     const bool mouseInViewport = pointInRect(mouse, {vp.x, vp.y}, {vp.z, vp.w});
 
-    const ObjectID selectedId = hierarchyView_.selectedId();
+    const Entity selectedId = hierarchyView_.selectedId();
     const bool hasSelection =
-        selectedId != INVALID_OBJECT &&
-        selectedId != engine_.scene.getRoot();
+        selectedId != Entity::invalid() &&
+        selectedId != engine_.scene.root &&
+        engine_.scene.has<Transform>(selectedId);
 
     glm::vec3 gizmoOrigin{0.f};
     float gizmoSize = 1.f;
     GizmoAxes gizmoAxes;
     if (hasSelection) {
-        const Object& selected = engine_.scene.get(selectedId);
+        const Transform& selected = engine_.scene.get<Transform>(selectedId);
         gizmoOrigin = glm::vec3(selected.worldMatrix[3]);
         gizmoSize = gizmoWorldSize(gizmoOrigin);
         gizmoAxes = gizmoAxesForSpace(selected, gizmoSpace_);
@@ -1313,20 +1345,20 @@ void Editor::updateSceneInteraction() {
 
         const RaycastHit hit = engine_.raycasting.castRay(ray);
         if (hit.distance < FLT_MAX &&
-            hit.object != INVALID_OBJECT &&
-            hit.object != engine_.scene.getRoot()) {
-            hierarchyView_.setSelectedId(hit.object);
-            inspectorView_.setSelectedId(hit.object);
+            hit.entity != Entity::invalid() &&
+            hit.entity != engine_.scene.root) {
+            hierarchyView_.setSelectedId(hit.entity);
+            inspectorView_.setSelectedId(hit.entity);
             clearGizmoDrag();
         } else {
-            hierarchyView_.setSelectedId(INVALID_OBJECT);
-            inspectorView_.setSelectedId(INVALID_OBJECT);
+            hierarchyView_.setSelectedId(Entity::invalid());
+            inspectorView_.setSelectedId(Entity::invalid());
             clearGizmoDrag();
         }
     }
 
     if (objectDragging_ &&
-        dragObjectId_ != INVALID_OBJECT &&
+        dragObjectId_ != Entity::invalid() &&
         gizmoActiveHandle_ != GizmoHandle::None &&
         input.down(MouseAction::Left)) {
         Ray ray;
@@ -1342,8 +1374,11 @@ void Editor::updateSceneInteraction() {
                 ray, dragPlanePoint_, dragPlaneNormal_, hitPoint))
             return;
 
-        Object& obj = engine_.scene.get(dragObjectId_);
-        const Object& parent = engine_.scene.get(obj.parent);
+        if (!engine_.scene.has<Transform>(dragObjectId_))
+            return;
+
+        Transform& transform = engine_.scene.get<Transform>(dragObjectId_);
+        const Transform& parent = *parentTransform(engine_.scene, dragObjectId_);
 
         if (gizmoMode_ == GizmoMode::Rotate && isAxisHandle(gizmoActiveHandle_)) {
             const auto projectOntoPlane = [&](const glm::vec3& v) {
@@ -1368,10 +1403,9 @@ void Editor::updateSceneInteraction() {
             if (std::abs(angleDeg) < 1e-4f)
                 return;
 
-            const glm::quat currentQ = eulerYXZToQuat(obj.transform.rotation());
+            const glm::quat currentQ = eulerYXZToQuat(transform.rotation);
             glm::quat newQ;
             if (gizmoSpace_ == GizmoSpace::World) {
-                const Object& parent = engine_.scene.get(obj.parent);
                 const glm::quat parentQ =
                     rotationQuatFromWorldMatrix(parent.worldMatrix);
                 const glm::quat worldQ = parentQ * currentQ;
@@ -1380,7 +1414,7 @@ void Editor::updateSceneInteraction() {
             } else {
                 newQ = currentQ * glm::angleAxis(angleRad, dragLocalAxis_);
             }
-            obj.transform.setRotation(quatToEulerYXZ(newQ));
+            transform.rotation = quatToEulerYXZ(newQ);
             return;
         }
 
@@ -1399,7 +1433,7 @@ void Editor::updateSceneInteraction() {
                 const float factor = 1.f + scaleDelta;
                 glm::vec3 scaled = dragStartScale_ * factor;
                 scaled = glm::max(scaled, glm::vec3(kGizmoMinScale));
-                obj.transform.setScale(scaled);
+                transform.scale = scaled;
                 return;
             }
 
@@ -1407,7 +1441,7 @@ void Editor::updateSceneInteraction() {
                 if (std::abs(scaleDelta) < 1e-10f)
                     return;
 
-                glm::vec3 scale = obj.transform.scale();
+                glm::vec3 scale = transform.scale;
                 const float factor = 1.f + scaleDelta;
                 if (gizmoSpace_ == GizmoSpace::World) {
                     glm::vec3 localDir = glm::vec3(
@@ -1429,7 +1463,7 @@ void Editor::updateSceneInteraction() {
                     else if (gizmoActiveHandle_ == GizmoHandle::AxisZ)
                         scale.z = std::max(kGizmoMinScale, scale.z * factor);
                 }
-                obj.transform.setScale(scale);
+                transform.scale = scale;
                 return;
             }
         }
@@ -1449,7 +1483,7 @@ void Editor::updateSceneInteraction() {
 
         const glm::vec3 localDelta = glm::vec3(
             parent.worldInvMatrix * glm::vec4(worldDelta, 0.f));
-        obj.transform.setPosition(obj.transform.position() + localDelta);
+        transform.position = transform.position + localDelta;
     }
 
     if (input.released(MouseAction::Left))

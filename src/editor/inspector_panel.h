@@ -7,14 +7,14 @@
 #include <functional>
 
 #include "engine/defines.h"
+#include "engine/entity.h"
 #include "engine/inspectable.h"
 
 class EditorPanel;
 class IBehaviour;
-class Object;
-class Scene;
-class Transform;
 class UI;
+class Scene;
+struct Transform;
 
 // Reusable inspector card list for IScript / IComponent (and future IBehaviour types).
 // Each card shows the type name plus INSPECT() fields (bool checkbox, numbers as inputs).
@@ -25,8 +25,8 @@ public:
         Scene& scene,
         const std::vector<IBehaviour*>& items,
         bool editable,
-        ObjectID draggingId,
-        ObjectID droppedId);
+        Entity draggingId,
+        Entity droppedId);
     void setVisible(bool visible);
 
 private:
@@ -54,15 +54,15 @@ private:
         IBehaviour& behaviour,
         Scene& scene,
         bool editable,
-        ObjectID draggingId,
-        ObjectID droppedId);
+        Entity draggingId,
+        Entity droppedId);
     void syncFieldRow(
         FieldRow& row,
         const InspectField& field,
         Scene& scene,
         bool editable,
-        ObjectID draggingId,
-        ObjectID droppedId);
+        Entity draggingId,
+        Entity droppedId);
     float cardHeight(size_t fieldCount) const;
     float fieldsHeight(size_t fieldCount) const;
     float listHeight(const std::vector<IBehaviour*>& items) const;
@@ -85,8 +85,8 @@ public:
         std::function<void(GizmoSpace)> onSpaceChange);
     void update(
         Transform& transform,
-        const Object& object,
-        const Scene& scene,
+        Entity entity,
+        Scene& scene,
         bool editable,
         GizmoSpace space);
     void setEditable(bool editable);
@@ -96,8 +96,8 @@ private:
     bool parseFloat(const std::string& text, float& out) const;
     void applyPendingEdits(
         Transform& transform,
-        const Object& object,
-        const Scene& scene,
+        Entity entity,
+        Scene& scene,
         GizmoSpace space);
 
     struct AxisFields {
@@ -127,13 +127,13 @@ private:
 class InspectorPanel {
 public:
     void bind(UI& ui, EditorPanel& panel);
-    void setSelectedId(ObjectID id) { selectedId_ = id; }
+    void setSelectedId(Entity id) { selectedId_ = id; }
     void setEditable(bool editable) { editable_ = editable; }
     void setGizmoSpace(GizmoSpace space) { gizmoSpace_ = space; }
     void setGizmoSpaceCallback(std::function<void(GizmoSpace)> callback) {
         gizmoSpaceCallback_ = std::move(callback);
     }
-    void setObjectDrag(ObjectID draggingId, ObjectID droppedId) {
+    void setObjectDrag(Entity draggingId, Entity droppedId) {
         draggingObjectId_ = draggingId;
         droppedObjectId_ = droppedId;
     }
@@ -146,9 +146,9 @@ private:
 
     UI* ui_ = nullptr;
     UIElementID contentId_ = INVALID_UI_ELEMENT;
-    ObjectID selectedId_ = INVALID_OBJECT;
-    ObjectID draggingObjectId_ = INVALID_OBJECT;
-    ObjectID droppedObjectId_ = INVALID_OBJECT;
+    Entity selectedId_ = Entity::invalid();
+    Entity draggingObjectId_ = Entity::invalid();
+    Entity droppedObjectId_ = Entity::invalid();
     bool editable_ = true;
     GizmoSpace gizmoSpace_ = GizmoSpace::Local;
     std::function<void(GizmoSpace)> gizmoSpaceCallback_;

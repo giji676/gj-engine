@@ -1,239 +1,323 @@
-#include <algorithm>
-#include <string>
-
 #include "scene.h"
-#include "engine/profilers/profile_scope.h"
-#include "engine/renderer/debug_renderer.h"
-#include "engine/engine.h"
 
-void collectRenderCommands(
-    const Scene& scene,
-    ObjectID id,
-    const glm::mat4& parent,
-    std::vector<RenderCommand>& out,
-    const Frustum& frustum);
+#include <algorithm>
 
-Scene::Scene() {
-    rootId = createObjectInternal();
-    objects[rootId].setID(rootId);
-    objects[rootId].parent = rootId;
-    objects[rootId].name = "Scene";
+#include "engine/systems/behaviours_system.h"
+#include "engine/systems/render_system.h"
+#include "engine/systems/transform_system.h"
+
+uint32_t TagRegistry::byName(const std::string& name) const {
+    const auto it = byName_.find(name);
+    assert(it != byName_.end());
+    return it->second;
 }
 
-void Scene::buildRenderList(
-        std::vector<RenderCommand>& out,
-        const Frustum& frustum)
-{
-    out.reserve(lastRenderListSize); // reserve based on last frame
-    PROFILE_SCOPE("collectRenderCommands");
-    collectRenderCommands(*this, rootId, glm::mat4(1.0f), out, frustum);
-    lastRenderListSize = out.size(); // remember for next frame
+uint32_t TagRegistry::intern(const std::string& name) {
+    const auto it = byName_.find(name);
+    if (it != byName_.end())
+        return it->second;
+
+    const uint32_t id = static_cast<uint32_t>(byId.size());
+    byName_.emplace(name, id);
+    byId.push_back(name);
+    entitiesByTag_.emplace_back();
+    denseByTag_.emplace_back();
+    return id;
 }
 
-void collectRenderCommands(
-    const Scene& scene,
-    ObjectID id,
-    const glm::mat4& parent,
-    std::vector<RenderCommand>& out,
-    const Frustum& frustum)
-{
-    const Object& obj = scene.get(id);
-    glm::mat4 world = obj.worldMatrix;
-
-    if (obj.model) {
-        Bounds local = obj.getBounds();
-        glm::vec3 wMin, wMax;
-        transformAABB(local, world, wMin, wMax);
-
-        if (!frustum.intersectsAABB(wMin, wMax)) {
-            // Still recurse children - child objects may be visible
-            // even if parent is culled.
-            for (ObjectID child : obj.children)
-                collectRenderCommands(scene, child, world, out, frustum);
-            return;
-        }
-    }
-
-    if (obj.debug) {
-        DebugRenderer& debug = ENGINE().debugRenderer;
-        debug.axis(world, 2.5f);
-        Bounds bounds = obj.getBounds();
-        debug.box(
-            world * glm::translate(glm::mat4(1.f), bounds.center),
-            bounds.size, {1.f, 1.f, 1.f});
-    }
-
-    if (obj.model) {
-        for (const auto& part : obj.model->getParts()) {
-            RenderCommand cmd;
-            cmd.mesh = &part.mesh;
-            cmd.material = part.material;
-            cmd.model = world;
-            cmd.sortKey =
-                (uint64_t)(cmd.material->usesTransparency() ? 1 : 0) << 63 |
-                (uint64_t)cmd.material->shader->ID << 48 |
-                (uint64_t)cmd.material->id       << 32 |
-                (uint64_t)cmd.mesh->id           << 16;
-            cmd.allocation = &ENGINE().meshRegistry.getAllocation(&part.mesh);
-            out.push_back(cmd);
-        }
-    }
-
-    for (auto child : obj.children) {
-        collectRenderCommands(scene, child, world, out, frustum);
-    }
+const std::string& TagRegistry::name(uint32_t id) const {
+    assert(id < byId.size());
+    return byId[id];
 }
 
-void Scene::update(bool runBehaviours) {
-    if (runBehaviours) {
-        updateScripts(getRoot());
-        updateComponents(getRoot());
-    }
-
-    PROFILE_SCOPE("updateWorldTransforms");
-    updateWorldTransforms(rootId, glm::mat4(1.0f));
-
-    // Readers (camera, etc.) pull world pose after hierarchy update.
-    lateUpdateComponents(getRoot());
-    lateUpdateScripts(getRoot());
+bool TagRegistry::hasName(const std::string& name) const {
+    return byName_.find(name) != byName_.end();
 }
 
-void Scene::updateScripts(ObjectID id) {
-    Object& obj = get(id);
-
-    for (auto& script : obj.scripts) {
-        if (script->enabled)
-            script->update();
-    }
-
-    for (ObjectID child : obj.children) {
-        updateScripts(child);
-    }
+bool TagRegistry::isValidId(uint32_t id) const {
+    return id < byId.size();
 }
 
-void Scene::updateComponents(ObjectID id) {
-    Object& obj = get(id);
+void TagRegistry::trackEntity(uint32_t tagId, uint32_t entityIdx) {
+    assert(isValidId(tagId));
+    auto& dense = denseByTag_[tagId];
+    if (entityIdx >= dense.size())
+        dense.resize(static_cast<size_t>(entityIdx) + 1, -1);
+    if (dense[entityIdx] >= 0)
+        return;
 
-    for (auto& component : obj.components) {
-        if (component->enabled)
-            component->update();
-    }
-
-    for (ObjectID child : obj.children) {
-        updateComponents(child);
-    }
+    dense[entityIdx] = static_cast<int32_t>(entitiesByTag_[tagId].size());
+    entitiesByTag_[tagId].push_back(entityIdx);
 }
 
-void Scene::lateUpdateScripts(ObjectID id) {
-    Object& obj = get(id);
+void TagRegistry::untrackEntity(uint32_t tagId, uint32_t entityIdx) {
+    assert(isValidId(tagId));
+    auto& dense = denseByTag_[tagId];
+    if (entityIdx >= dense.size() || dense[entityIdx] < 0)
+        return;
 
-    for (auto& script : obj.scripts) {
-        if (script->enabled)
-            script->lateUpdate();
-    }
-
-    for (ObjectID child : obj.children) {
-        lateUpdateScripts(child);
-    }
+    auto& list = entitiesByTag_[tagId];
+    const int32_t pos = dense[entityIdx];
+    const uint32_t last = list.back();
+    list[static_cast<size_t>(pos)] = last;
+    dense[last] = pos;
+    list.pop_back();
+    dense[entityIdx] = -1;
 }
 
-void Scene::lateUpdateComponents(ObjectID id) {
-    Object& obj = get(id);
+const std::vector<uint32_t>& TagRegistry::entities(uint32_t tagId) const {
+    assert(isValidId(tagId));
+    return entitiesByTag_[tagId];
+}
 
-    for (auto& component : obj.components) {
-        if (component->enabled)
-            component->lateUpdate();
-    }
+bool hasTag(const Tag& t, uint32_t id) {
+    return std::find(t.ids.begin(), t.ids.end(), id) != t.ids.end();
+}
 
-    for (ObjectID child : obj.children) {
-        lateUpdateComponents(child);
-    }
+void addTag(Tag& t, uint32_t id) {
+    if (!hasTag(t, id))
+        t.ids.push_back(id);
+}
+
+void removeTag(Tag& t, uint32_t id) {
+    auto it = std::find(t.ids.begin(), t.ids.end(), id);
+    if (it != t.ids.end())
+        t.ids.erase(it);
+}
+
+void Scene::addTag(const Entity& e, uint32_t tagId) {
+    assert(isValid(e));
+    assert(tagRegistry.isValidId(tagId));
+
+    Tag& tags = has<Tag>(e) ? get<Tag>(e) : add<Tag>(e);
+    if (hasTag(tags, tagId))
+        return;
+
+    tags.ids.push_back(tagId);
+    tagRegistry.trackEntity(tagId, e.idx);
+}
+
+void Scene::removeTag(const Entity& e, uint32_t tagId) {
+    if (!isValid(e) || !has<Tag>(e))
+        return;
+
+    Tag& tags = get<Tag>(e);
+    if (!hasTag(tags, tagId))
+        return;
+
+    ::removeTag(tags, tagId);
+    tagRegistry.untrackEntity(tagId, e.idx);
 }
 
 void Scene::init() {
-    initBehaviours(getRoot());
+    root = create(Entity::invalid());
+    Object& rootObj = add<Object>(root);
+    rootObj.name = "Scene";
 }
 
-void Scene::initBehaviours(ObjectID id) {
-    Object& obj = get(id);
-
-    for (auto& component : obj.components) {
-        component->init();
-    }
-    for (auto& script : obj.scripts) {
-        script->init();
-    }
-
-    for (ObjectID child : obj.children) {
-        initBehaviours(child);
-    }
+void Scene::registerSystem(std::unique_ptr<ISystem> system) {
+    systems_.push_back(std::move(system));
 }
 
-void Scene::reparent(ObjectID childId, ObjectID newParentId, int index) {
-    if (childId == INVALID_OBJECT || newParentId == INVALID_OBJECT)
-        return;
-    if (childId == newParentId)
-        return;
-    if (childId == rootId)
-        return;
-    if (isDescendant(childId, newParentId))
-        return;
+void Scene::update(float dt, bool runBehaviours) {
+    for (auto& system : systems_)
+        system->update(*this, dt);
 
-    ObjectID oldParentId = objects[childId].parent;
-    auto& oldSiblings = objects[oldParentId].children;
-    auto oldIt = std::find(oldSiblings.begin(), oldSiblings.end(), childId);
-    if (oldIt == oldSiblings.end())
-        return;
+    BehavioursSystem behaviours;
+    if (runBehaviours)
+        behaviours.update(*this);
 
-    const int oldIndex = static_cast<int>(oldIt - oldSiblings.begin());
-    oldSiblings.erase(oldIt);
+    TransformSystem ts;
+    ts.update(*this);
 
-    auto& newSiblings = objects[newParentId].children;
-    if (oldParentId == newParentId && oldIndex < index)
-        --index;
-
-    if (index < 0 || index > static_cast<int>(newSiblings.size()))
-        index = static_cast<int>(newSiblings.size());
-
-    newSiblings.insert(newSiblings.begin() + index, childId);
-    objects[childId].parent = newParentId;
+    if (runBehaviours)
+        behaviours.lateUpdate(*this);
 }
 
-bool Scene::isDescendant(ObjectID ancestorId, ObjectID id) const {
-    if (ancestorId == INVALID_OBJECT || id == INVALID_OBJECT)
+void Scene::collectRenderCommands(
+    const Frustum& frustum,
+    std::vector<RenderCommand>& out)
+{
+    RenderSystem rs;
+    rs.lastSize = lastRenderListSize;
+    rs.update(*this, frustum);
+    lastRenderListSize = rs.lastSize;
+    out.insert(out.end(), rs.commands.begin(), rs.commands.end());
+}
+
+void Scene::ensureSlotCapacity(uint32_t idx) {
+    const size_t need = static_cast<size_t>(idx) + 1;
+    if (slots.size() < need)
+        slots.resize(need);
+
+    transforms_.ensure(idx);
+}
+
+Entity Scene::create() {
+    return create(Entity::invalid());
+}
+
+Entity Scene::create(Entity parent) {
+    uint32_t idx;
+
+    if (freeIndices.empty())
+        idx = nextIndex++;
+    else {
+        idx = freeIndices.back();
+        freeIndices.pop_back();
+    }
+
+    ensureSlotCapacity(idx);
+
+    transforms_.reset(idx);
+
+    Entity e = {
+        .idx = idx,
+        .gen = slots[idx].gen,
+    };
+
+    slots[idx].alive = true;
+    slots[idx].comp_mask = 0;
+    add<Transform>(e);
+
+    Hierarchy& h = add<Hierarchy>(e);
+    h.children.clear();
+
+    // Creating the scene root: no parent, do not touch any parent list.
+    if (!isValid(parent) && !isValid(root)) {
+        h.parent = Entity::invalid();
+        return e;
+    }
+
+    // Default parent is the scene root.
+    if (!isValid(parent))
+        parent = root;
+
+    h.parent = parent;
+
+    Hierarchy& parentHierarchy = add<Hierarchy>(parent);
+    parentHierarchy.children.push_back(e);
+
+    return e;
+}
+
+void Scene::clearEntityComponents(uint32_t idx) {
+    if ((slots[idx].comp_mask & ComponentTraits<Tag>::mask) != 0) {
+        for (uint32_t tagId : tags_.at(idx).ids)
+            tagRegistry.untrackEntity(tagId, idx);
+    }
+
+    transforms_.untrack(idx);
+    objects_.untrack(idx);
+    hierarchies_.untrack(idx);
+    tags_.untrack(idx);
+    behaviours_.untrack(idx);
+
+    transforms_.reset(idx);
+    objects_.reset(idx);
+    hierarchies_.reset(idx);
+    tags_.reset(idx);
+    behaviours_.reset(idx);
+    dynamicComponents_.clearEntity(idx);
+}
+
+void Scene::destroy(Entity& e) {
+    if (!isValid(e))
+        return;
+
+    if (isValid(root) && e.idx == root.idx)
+        return;
+
+    const uint32_t idx = e.idx;
+
+    if (has<Hierarchy>(e)) {
+        Hierarchy& h = get<Hierarchy>(e);
+        if (isValid(h.parent) && has<Hierarchy>(h.parent)) {
+            Hierarchy& parentH = get<Hierarchy>(h.parent);
+            auto it = std::find_if(parentH.children.begin(), parentH.children.end(),
+                [&](const Entity& child) { return child.idx == idx; });
+            if (it != parentH.children.end())
+                parentH.children.erase(it);
+        }
+
+        // Copy first: recursive destroy unlinks children from this parent.
+        std::vector<Entity> children = h.children;
+        h.children.clear();
+        for (Entity child : children)
+            destroy(child);
+    }
+
+    clearEntityComponents(idx);
+
+    slots[idx].alive = false;
+    slots[idx].comp_mask = 0;
+    slots[idx].gen++;
+    freeIndices.push_back(idx);
+
+    e = Entity::invalid();
+}
+
+bool Scene::isValid(const Entity& e) const {
+    return e.idx != UINT32_MAX &&
+        e.idx < slots.size() &&
+        e.gen == slots[e.idx].gen &&
+        slots[e.idx].alive;
+}
+
+bool Scene::isDescendant(Entity ancestor, Entity node) const {
+    if (!isValid(ancestor) || !isValid(node))
         return false;
-    ObjectID current = id;
-    while (current != rootId && current != INVALID_OBJECT) {
-        if (current == ancestorId)
+
+    Entity cur = node;
+    const uint32_t hopLimit = static_cast<uint32_t>(slots.size());
+    for (uint32_t hops = 0; hops < hopLimit; ++hops) {
+        if (!has<Hierarchy>(cur))
+            return false;
+        const Entity parent = get<Hierarchy>(cur).parent;
+        if (!isValid(parent))
+            return false;
+        if (parent == ancestor)
             return true;
-        current = objects[current].parent;
-        if (current == objects[current].parent && current == rootId)
-            break;
+        cur = parent;
     }
     return false;
 }
 
-ObjectID Scene::createObject() {
-    ObjectID id = createObjectInternal();
-    objects[id].setID(id);
-    objects[id].parent = rootId;
-    objects[id].name = "Object " + std::to_string(id);
-    objects[rootId].children.push_back(id);
-    return id;
-}
+void Scene::reparent(Entity child, Entity newParent, int index) {
+    if (!isValid(child) || child == root)
+        return;
+    if (!isValid(newParent))
+        newParent = root;
+    if (child == newParent || isDescendant(child, newParent))
+        return;
 
-ObjectID Scene::createObjectInternal() {
-    ObjectID id = static_cast<ObjectID>(objects.size());
-    objects.emplace_back();
-    return id;
-}
+    Hierarchy& childH = has<Hierarchy>(child) ? get<Hierarchy>(child) : add<Hierarchy>(child);
+    Hierarchy& newParentH =
+        has<Hierarchy>(newParent) ? get<Hierarchy>(newParent) : add<Hierarchy>(newParent);
 
-void Scene::updateWorldTransforms(ObjectID id, const glm::mat4& parentWorld) {
-    Object& obj = objects[id];
+    Entity oldParent = childH.parent;
+    int oldIndex = -1;
+    if (isValid(oldParent) && has<Hierarchy>(oldParent)) {
+        Hierarchy& oldParentH = get<Hierarchy>(oldParent);
+        auto it = std::find_if(
+            oldParentH.children.begin(),
+            oldParentH.children.end(),
+            [&](const Entity& c) { return c.idx == child.idx; });
+        if (it != oldParentH.children.end()) {
+            oldIndex = static_cast<int>(it - oldParentH.children.begin());
+            oldParentH.children.erase(it);
+        }
+    }
 
-    glm::mat4 local = obj.transform.localMatrix();
-    obj.updateWorld(parentWorld * local);
+    if (oldParent == newParent && oldIndex >= 0 && oldIndex < index)
+        --index;
 
-    for (auto child : obj.children)
-        updateWorldTransforms(child, obj.worldMatrix);
+    childH.parent = newParent;
+
+    if (index < 0 || index > static_cast<int>(newParentH.children.size()))
+        index = static_cast<int>(newParentH.children.size());
+
+    newParentH.children.insert(
+        newParentH.children.begin() + index,
+        child);
 }

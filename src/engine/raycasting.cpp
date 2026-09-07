@@ -1,4 +1,6 @@
 #include <algorithm>
+#include <limits>
+
 #include "raycasting.h"
 #include "engine.h"
 #include "engine/asset_manager/model.h"
@@ -9,78 +11,76 @@ RaycastHit Raycasting::castRay(const Ray& ray) {
     PROFILE_SCOPE("Raycasting::castRay");
     RaycastHit hit;
 
-    checkIntersect(
-        ENGINE().scene.getRoot(),
-        ray,
-        glm::mat4(1.0f),
-        hit
-    );
+    Scene& scene = ENGINE().scene;
+    if (scene.isValid(scene.root))
+        checkIntersect(scene.root, ray, hit);
 
     return hit;
 }
 
 void Raycasting::checkIntersect(
-    ObjectID id,
+    Entity e,
     const Ray& ray,
-    const glm::mat4& parent,
     RaycastHit& bestHit)
 {
-    Engine& engine = ENGINE();
-    const Object& obj = engine.scene.get(id);
+    Scene& scene = ENGINE().scene;
+    if (!scene.isValid(e))
+        return;
 
-    glm::mat4 world = obj.worldMatrix;
+    if (scene.has<Object>(e) && scene.has<Transform>(e)) {
+        const Object& object = scene.get<Object>(e);
+        const Transform& transform = scene.get<Transform>(e);
+        const glm::mat4& worldMat = transform.worldMatrix;
 
-    Bounds bounds = obj.getBounds();
-    glm::vec3 size = bounds.size;
-    if (size != glm::vec3(0.0f)) {
-        glm::vec3 worldScale(
-            glm::length(glm::vec3(world[0])),
-            glm::length(glm::vec3(world[1])),
-            glm::length(glm::vec3(world[2]))
-        );
+        if (object.model) {
+            const Bounds& bounds = object.model->getBounds();
+            glm::vec3 size = bounds.size;
+            if (size != glm::vec3(0.0f)) {
+                glm::vec3 worldScale(
+                    glm::length(glm::vec3(worldMat[0])),
+                    glm::length(glm::vec3(worldMat[1])),
+                    glm::length(glm::vec3(worldMat[2]))
+                );
 
-        float radius =
-            std::max({
-                size.x * worldScale.x,
-                size.y * worldScale.y,
-                size.z * worldScale.z
-            }) * 0.5f;
+                float radius =
+                    std::max({
+                        size.x * worldScale.x,
+                        size.y * worldScale.y,
+                        size.z * worldScale.z
+                    }) * 0.5f;
 
-        glm::vec3 center =
-            glm::vec3(world * glm::vec4(bounds.center, 1.0f));
+                glm::vec3 center =
+                    glm::vec3(worldMat * glm::vec4(bounds.center, 1.0f));
 
-        float distance;
+                // TODO: double check radius calculation
+                // backpacks torch thing isn't being hit because of radius sometimes
+                float distance;
+                if (testSphereIntersection(ray, center, radius * 1.5f, distance)) {
+                    Ray localRay;
+                    localRay.origin = glm::vec3(
+                        transform.worldInvMatrix * glm::vec4(ray.origin, 1.0f));
+                    localRay.direction = glm::normalize(glm::vec3(
+                        transform.worldInvMatrix * glm::vec4(ray.direction, 0.0f)));
 
-        // TODO: double check radius calculation
-        // backpacks torch thing isn't being hit because of radius sometimes
-        if (testSphereIntersection(
-            ray,
-            center,
-            radius*1.5f,
-            distance))
-        {
-            Ray localRay;
-            localRay.origin = glm::vec3(obj.worldInvMatrix * glm::vec4(ray.origin, 1.0f));
-            localRay.direction = glm::normalize(
-                    glm::vec3(obj.worldInvMatrix * glm::vec4(ray.direction, 0.0f))
-                    );
+                    object.model->bvh.intersectBVH(
+                        localRay,
+                        object.model->bvh.rootNodeIdx,
+                        worldMat);
 
-            obj.model->bvh.intersectBVH(
-                    localRay,
-                    obj.model->bvh.rootNodeIdx,
-                    world
-                    );
-
-            if (localRay.t < bestHit.distance) {
-                bestHit.distance = localRay.t;
-                bestHit.object = obj.getID();
+                    if (localRay.t < bestHit.distance) {
+                        bestHit.distance = localRay.t;
+                        bestHit.entity = e;
+                    }
+                }
             }
         }
     }
 
-    for (ObjectID child : obj.children) {
-        checkIntersect(child, ray, world, bestHit);
-    }
+    if (!scene.has<Hierarchy>(e))
+        return;
+
+    for (const Entity& child : scene.get<Hierarchy>(e).children)
+        checkIntersect(child, ray, bestHit);
 }
 
 bool Raycasting::testSphereIntersection(
@@ -194,32 +194,29 @@ std::optional<TriangleHit> Raycasting::testTriangleIntersection(
     glm::vec3 edge1 = triangle.v1 - triangle.v0;
     glm::vec3 edge2 = triangle.v2 - triangle.v0;
 
-    // Backface culling, assuming CCW-wound triangles.
-    const glm::vec3 normal = cross(edge1, edge2); // No need to normalize
+    const glm::vec3 normal = cross(edge1, edge2);
     if (dot(normal, ray.direction) > 0) return {};
 
     glm::vec3 ray_cross_e2 = cross(ray.direction, edge2);
     float det = dot(edge1, ray_cross_e2);
 
-    if (abs(det) < epsilon) return {}; // Ray is parallel to triangle
+    if (abs(det) < epsilon) return {};
 
     float inv_det = 1.0 / det;
     glm::vec3 s = ray.origin - triangle.v0;
     float u = inv_det * dot(s, ray_cross_e2);
 
-    if (u < -epsilon || u - 1 > epsilon) return {}; // Ray passes outside edge2's bounds
+    if (u < -epsilon || u - 1 > epsilon) return {};
 
     glm::vec3 s_cross_e1 = cross(s, edge1);
     float v = inv_det * dot(ray.direction, s_cross_e1);
 
-    if (v < -epsilon || u + v - 1 > epsilon) return {}; // Ray passes outside edge1's bounds
+    if (v < -epsilon || u + v - 1 > epsilon) return {};
 
-    // The ray line intersects with the triangle.
-    // We compute t to find where on the ray the intersection is.
     float t = inv_det * dot(edge2, s_cross_e1);
 
-    if (t > epsilon) // Ray intersection
+    if (t > epsilon)
         return TriangleHit{t, ray.origin + ray.direction * t, normal};
-    else // This means that there is a line intersection but not a ray intersection.
+    else
         return {};
 }

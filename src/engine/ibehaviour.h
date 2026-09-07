@@ -1,11 +1,11 @@
 #pragma once
 
-#include "defines.h"
+#include "engine/entity.h"
 #include "inspectable.h"
 
 class IBehaviour : public Inspectable {
 public:
-    ObjectID object = INVALID_OBJECT;
+    Entity entity = Entity::invalid();
     bool enabled = true;
 
     IBehaviour() {

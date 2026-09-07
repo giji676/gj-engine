@@ -40,13 +40,13 @@ void EditorCamera::syncFrom(const Camera& gameCam, float lookDistance) {
     camera_.up = safeNormalize(gameCam.up, {0.f, 1.f, 0.f});
 
     pivot_ = gameCam.pos + gameCam.front * lookDistance;
-    trackedSelectionId_ = INVALID_OBJECT;
+    trackedSelectionId_ = Entity::invalid();
     syncOrbitStateFromCamera();
 }
 
 void EditorCamera::focusOn(const glm::vec3& worldPoint, float distance) {
     pivot_ = worldPoint;
-    trackedSelectionId_ = INVALID_OBJECT;
+    trackedSelectionId_ = Entity::invalid();
     distance_ = std::max(distance, kOrbitEpsilon);
     camera_.pos = pivot_ - camera_.front * distance_;
     syncOrbitStateFromCamera();
@@ -55,7 +55,7 @@ void EditorCamera::focusOn(const glm::vec3& worldPoint, float distance) {
 void EditorCamera::frameOn(
     const glm::vec3& worldCenter,
     float worldExtent,
-    ObjectID selectionId)
+    Entity selectionId)
 {
     const float extent = std::max(worldExtent, kMinFrameExtent);
     distance_ = std::max(extent * kFramePadding * 2.f, kDefaultDistance);
@@ -72,7 +72,7 @@ void EditorCamera::update(
     Input& input,
     const glm::vec4& viewportRect,
     bool active,
-    ObjectID selectionId,
+    Entity selectionId,
     const glm::vec3& selectionPivot)
 {
     if (!active) {
@@ -81,7 +81,7 @@ void EditorCamera::update(
         return;
     }
 
-    const bool hasSelection = selectionId != INVALID_OBJECT;
+    const bool hasSelection = selectionId != Entity::invalid();
 
     if (hasSelection) {
         if (selectionId != trackedSelectionId_) {
@@ -91,7 +91,7 @@ void EditorCamera::update(
             followSelectionPivot(selectionPivot);
         }
     } else {
-        trackedSelectionId_ = INVALID_OBJECT;
+        trackedSelectionId_ = Entity::invalid();
     }
 
     const glm::vec2 mouse = input.mousePosition();

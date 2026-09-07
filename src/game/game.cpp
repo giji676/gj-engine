@@ -5,9 +5,13 @@
 #include "game/game.h"
 #include "engine/defines.h"
 #include "engine/profilers/profile_scope.h"
+#include "engine/scene.h"
 #include "game/perlin.h"
 #include "game/scripts/test.h"
 #include "game/scripts/player_controller.h"
+#include "game/scripts/spin_system.h"
+#include "game/scripts/gravity_system.h"
+#include "game/components/gravity.h"
 
 #include "engine/engine.h"
 #include "engine/asset_manager/widgets.h"
@@ -68,26 +72,21 @@ void Game::init() {
     sceneShader.setVec3("lightPos", light.pos);
     sceneShader.setVec3("lightColor", light.color);
 
-    int width = 10;
-    ObjectID lastObjId;
+    scene.registerComponent<Gravity>();
+    scene.registerSystem(std::make_unique<SpinSystem>());
+    scene.registerSystem(std::make_unique<GravitySystem>());
 
-    for (int i = 0; i < 10; i++) {
-        ObjectID objId = scene.createObject();
-        Object& obj = scene.get(objId);
-        obj.model = &engine.assets.getModel("car");
-        obj.transform.setPosition({i % width, 0.f, -i/10.f});
-        obj.transform.setScale({0.001f, 0.001f, 0.001f});
-        obj.addScript<Test>();
-        lastObjId = objId;
-    }
-
-    ObjectID objId = scene.createObject();
-    Object& obj = scene.get(objId);
-    obj.model = &engine.assets.getModel("backpack");
-    obj.transform.setPosition({0.0f, 1.5f, -1.5f});
-    obj.transform.setScale({100.1f, 100.1f, 100.1f});
-    obj.addScript<Test>();
-    scene.reparent(objId, lastObjId);
+    Entity e = scene.create();
+    Transform& t = scene.get<Transform>(e);
+    t.position.y = 2.f;
+    t.scale = {0.001f, 0.001f, 0.001f};
+    Object& o = scene.add<Object>(e);
+    o.model = &engine.assets.getModel("car");
+    o.name = "ECS ENTITY";
+    o.debug = true;
+    scene.addTag(e, scene.tagRegistry.intern("spin"));
+    Gravity& gravity = scene.add<Gravity>(e);
+    gravity.acceleration = {0.f, -0.2f, 0.f};
 
     Shader& texturedMatShader = engine.assets.getShader("textured_mat");
     texturedMatShader.use();
@@ -445,28 +444,14 @@ void Game::setupTerrain() {
 
 void Game::setupPlayer() {
     Scene& scene = engine.scene;
-    ObjectID id = scene.createObject();
-    Object& obj = scene.get(id);
-    obj.name = "Player";
-    PlayerController& controller = obj.addScript<PlayerController>(&world);
-
-    ObjectID childId = scene.createObject();
-    Object& childObj = scene.get(childId);
-    childObj.transform.setPosition({0.f, 0.2f, 0.f});
-    childObj.addComponent<Camera>();
-    engine.activeCameraObject = childId;
-    scene.reparent(childId, id);
-    controller.child.id = childId;
-
-    ObjectID arId = scene.createObject();
-    Object& arObj = scene.get(arId);
-    scene.reparent(arId, childId);
-    arObj.name = "AR";
-    arObj.model = &engine.assets.getModel("ar");
-    arObj.transform.setPosition({0.2f, -0.11f, -0.6f});
-    arObj.transform.setRotation({0.f, 0.f, 0.f});
-    arObj.transform.setScale({0.1f, 0.1f, 0.1f});
-    controller.gun.id = arId;
+    Entity e = scene.create();
+    scene.add<Object>(e).name = "Player";
+    scene.addTag(e, scene.tagRegistry.intern("player"));
+    Behaviours& ib = scene.add<Behaviours>(e);
+    ib.entity = e;
+    ib.addScript<PlayerController>(&this->world);
+    ib.addComponent<Camera>();
+    engine.activeCameraEntity = e;
 }
 
 Terrain generateTerrain(int width, int height, float scale, float heightScale) {

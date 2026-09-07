@@ -4,25 +4,19 @@
 
 #include "engine/iscript.h"
 #include "engine/engine.h"
-#include "engine/asset_manager/object.h"
-#include "engine/raycasting.h"
+#include "engine/scene.h"
 #include "game/world.h"
 
 class PlayerController : public IScript {
 public:
-    explicit PlayerController(World* world)
-        : world(world)
+    explicit PlayerController(World_* terrain)
+        : terrain(terrain)
     {
         INSPECT(speed);
         INSPECT(jumpForce);
         INSPECT(lookSensitivity);
-        INSPECT(gun);
-        INSPECT(child);
         INSPECT(recoilAngle);
     }
-
-    ObjectRef gun;
-    ObjectRef child;
 
     glm::vec3 velocity{0.f};
     bool grounded = false;
@@ -33,15 +27,14 @@ public:
     float pitch = 0.f;
     float recoilAngle = 5.f;
 
-    void init() override {
-        if (Object* gunObj = gun.get(ENGINE().scene))
-            gunRestRotation = gunObj->transform.rotation();
-    }
+    void init() override {}
     const char* typeName() const override { return "PlayerController"; }
 
     void update() override {
         Engine& engine = ENGINE();
-        Object& obj = engine.scene.get(object);
+        if (!engine.scene.isValid(entity) || !engine.scene.has<Transform>(entity))
+            return;
+
         Input& input = engine.input;
         const float dt = DT();
 
@@ -52,7 +45,9 @@ public:
         const glm::vec3 look = lookDirection();
         const glm::vec3 worldUp(0.f, 1.f, 0.f);
         const glm::vec3 right = glm::normalize(glm::cross(look, worldUp));
-        glm::vec3 pos = obj.transform.position();
+
+        Transform& transform = engine.scene.get<Transform>(entity);
+        glm::vec3 pos = transform.position;
 
         const float moveSpeed = speed * dt;
         if (input.down(Action::MoveForward))
@@ -70,58 +65,15 @@ public:
         velocity.y += -engine.G * dt;
         pos.y += velocity.y * dt;
 
-        if (world)
+        if (terrain)
             resolveGround(pos);
 
-        obj.transform.setPosition(pos);
-        // obj.transform.setRotation({pitch, yaw, 0.f});
-
-        Object* childObj = child.get(ENGINE().scene);
-        if (!childObj)
-            return;
-        childObj->transform.setRotation({pitch, yaw, 0.f});
-
-        updateGunRecoil(engine.scene, input, dt);
-
-        clearDebug(engine.scene.getRoot());
-
-        Ray ray{
-            .origin = glm::vec3(childObj->worldMatrix[3]),
-            .direction = look,
-        };
-        RaycastHit hit = engine.raycasting.castRay(ray);
-        if (hit.object != INVALID_OBJECT_ID)
-            engine.scene.get(hit.object).debug = true;
+        transform.position = pos;
+        transform.rotation = {pitch, yaw, 0.f};
     }
 
 private:
-    World* world = nullptr;
-    glm::vec3 gunRestRotation{0.f};
-    float gunRecoilX = 0.f;
-    float gunRecoilTarget = 0.f;
-
-    void updateGunRecoil(Scene& scene, Input& input, float dt) {
-        Object* gunObj = gun.get(scene);
-        if (!gunObj)
-            return;
-
-        if (input.pressed(MouseAction::Left))
-            gunRecoilTarget = recoilAngle;
-
-        const float speed = (gunRecoilTarget > gunRecoilX)
-            ? 40.f
-            : 12.f;
-        const float t = 1.f - std::exp(-speed * dt);
-        gunRecoilX = glm::mix(gunRecoilX, gunRecoilTarget, t);
-
-        if (gunRecoilTarget != 0.f &&
-            std::abs(gunRecoilX - gunRecoilTarget) < 0.15f)
-            gunRecoilTarget = 0.f;
-
-        glm::vec3 rot = gunRestRotation;
-        rot.x += gunRecoilX;
-        gunObj->transform.setRotation(rot);
-    }
+    World_* terrain = nullptr;
 
     glm::vec3 lookDirection() const {
         return glm::normalize(glm::vec3(
@@ -131,16 +83,16 @@ private:
     }
 
     void resolveGround(glm::vec3& pos) {
-        const float halfW = (world->width - 1) * world->scale * 0.5f;
-        const float halfH = (world->height - 1) * world->scale * 0.5f;
+        const float halfW = (terrain->width - 1) * terrain->scale * 0.5f;
+        const float halfH = (terrain->height - 1) * terrain->scale * 0.5f;
 
-        int x = static_cast<int>(floor((pos.x + halfW) / world->scale));
-        int z = static_cast<int>(floor((pos.z + halfH) / world->scale));
-        x = glm::clamp(x, 0, world->width - 1);
-        z = glm::clamp(z, 0, world->height - 1);
+        int x = static_cast<int>(floor((pos.x + halfW) / terrain->scale));
+        int z = static_cast<int>(floor((pos.z + halfH) / terrain->scale));
+        x = glm::clamp(x, 0, terrain->width - 1);
+        z = glm::clamp(z, 0, terrain->height - 1);
 
-        const int idx = z * world->width + x;
-        const float groundY = world->terrain.vertices[idx * 6 + 1];
+        const int idx = z * terrain->width + x;
+        const float groundY = terrain->terrain.vertices[idx * 6 + 1];
 
         if (pos.y <= groundY) {
             velocity.y = 0.f;
@@ -149,12 +101,5 @@ private:
         } else {
             grounded = false;
         }
-    }
-
-    static void clearDebug(ObjectID id) {
-        Object& obj = ENGINE().scene.get(id);
-        obj.debug = false;
-        for (ObjectID child : obj.children)
-            clearDebug(child);
     }
 };

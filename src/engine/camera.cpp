@@ -1,14 +1,17 @@
 #include "camera.h"
 
-#include "engine/asset_manager/object.h"
 #include "engine/engine.h"
 
 void Camera::lateUpdate() {
-    const Object& obj = ENGINE().scene.get(object);
-    pos = glm::vec3(obj.worldMatrix[3]);
+    Engine& engine = ENGINE();
+    if (!engine.scene.isValid(entity) || !engine.scene.has<Transform>(entity))
+        return;
 
-    const glm::vec3 worldUp = glm::vec3(obj.worldMatrix[1]);
-    const glm::vec3 worldBack = glm::vec3(obj.worldMatrix[2]);
+    const glm::mat4& world = engine.scene.get<Transform>(entity).worldMatrix;
+    pos = glm::vec3(world[3]);
+
+    const glm::vec3 worldUp = glm::vec3(world[1]);
+    const glm::vec3 worldBack = glm::vec3(world[2]);
     const float upLen = glm::length(worldUp);
     const float backLen = glm::length(worldBack);
     if (upLen > 1e-8f)

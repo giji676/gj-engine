@@ -1,11 +1,11 @@
 #pragma once
 
 #include <cfloat>
-#include <glm/glm.hpp>
 #include <optional>
-#include "defines.h"
+#include <glm/glm.hpp>
 
-#define INVALID_OBJECT_ID 0
+#include "engine/defines.h"
+#include "engine/entity.h"
 
 struct triangle3 {
     glm::vec3 a;
@@ -14,7 +14,7 @@ struct triangle3 {
 };
 
 struct RaycastHit {
-    ObjectID object = INVALID_OBJECT_ID;
+    Entity entity = Entity::invalid();
     float distance = FLT_MAX;
 };
 
@@ -35,9 +35,8 @@ public:
     RaycastHit castRay(const Ray& ray);
 
     void checkIntersect(
-        ObjectID id,
+        Entity e,
         const Ray& ray,
-        const glm::mat4& parent,
         RaycastHit& bestHit);
 
     static bool testSphereIntersection(

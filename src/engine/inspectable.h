@@ -3,6 +3,7 @@
 #include <typeinfo>
 #include <vector>
 
+#include "engine/entity.h"
 #include "engine/object_ref.h"
 
 enum class InspectType {
@@ -21,8 +22,6 @@ struct InspectField {
     const std::type_info* requiredType = nullptr;
 };
 
-// C++ stand-in for Unity serialized public fields. Scripts and components call
-// INSPECT(member) so the editor can build UI from the live field pointers.
 class Inspectable {
 public:
     const std::vector<InspectField>& inspectFields() const { return fields_; }
@@ -37,10 +36,10 @@ protected:
     void expose(const char* name, float& value) {
         add(name, InspectType::Float, &value);
     }
-    void expose(const char* name, ObjectRef& value) {
+    void expose(const char* name, EntityRef& value) {
         add(name, InspectType::Object, &value.id);
     }
-    void expose(const char* name, ObjectID& value) {
+    void expose(const char* name, Entity& value) {
         add(name, InspectType::Object, &value);
     }
 
